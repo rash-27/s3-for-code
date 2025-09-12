@@ -23,19 +23,35 @@ Run the server
 fastapi dev main.py
 ```
 
-## Setting up the BE (Docker)
+## Setting up the BE (using Docker)
 
 Change the Directory
 ```bash
 cd be
 ```
 
-Build and Run both postgres and backend image
+Create and update .env file
+```
+cp .env.example .env
+```
+
+### Setting up the Database 
+Run a postgres image and create a database in it with name in the .env file
 ```bash
-docker-compose up --build
+docker run -p 5432:5432 -e POSTGRES_PASSWORD=password -d postgres
+```
+
+### Setting up the Backend
+Build backend image
+```bash
+docker build -t fastapi-backend .
+```
+Run backend container
+```bash
+docker run -d -p 8000:8000 --name backend_container fastapi-backend
 ```
 
 ## Used internals
 - Postgres DB
 - SQLAlchemy (ORM)
-- asyncpg (async driver for PostgreSQL)
+- alembic (for migrations)
