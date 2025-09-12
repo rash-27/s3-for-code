@@ -1,6 +1,7 @@
 # s3-for-code
 
-## Setting up the BE
+## Setting up the BE (Manual)
+
 Change the Directory
 ```bash
 cd be
@@ -21,3 +22,20 @@ Run the server
 ```bash
 fastapi dev main.py
 ```
+
+## Setting up the BE (Docker)
+
+Change the Directory
+```bash
+cd be
+```
+
+Build and Run both postgres and backend image
+```bash
+docker-compose up --build
+```
+
+## Used internals
+- Postgres DB
+- SQLAlchemy (ORM)
+- asyncpg (async driver for PostgreSQL)
