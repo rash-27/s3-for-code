@@ -33,3 +33,7 @@ def read_functions(skip: int = 0, limit: int = 100, db: Session = Depends(get_db
     """
     functions = db.query(models.Function).offset(skip).limit(limit).all()
     return functions
+
+# start deployment
+# stop deployment
+# logs
