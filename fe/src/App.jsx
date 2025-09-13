@@ -1,16 +1,22 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
-import HomePage from './components/HomePage';
-import UploadPage from './components/UploadPage';
+import { Routes, Route } from 'react-router-dom';
+import Layout from './components/layout/Layout';
+import FunctionList from './components/pages/FunctionList';
+import CreateFunction from './components/pages/CreateFunction';
+import EditFunction from './components/pages/EditFunction';
+import FunctionLogs from './components/pages/FunctionLogs';
+import './index.css';
 
 function App() {
   return (
-    <Router>
+    <Layout>
       <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/upload" element={<UploadPage />}/>
+        <Route path="/" element={<FunctionList />} />
+        <Route path="/create" element={<CreateFunction />} />
+        <Route path="/edit/:id" element={<EditFunction />} />
+        <Route path="/logs/:id" element={<FunctionLogs />} />
       </Routes>
-    </Router>
+    </Layout>
   );
 }
 
