@@ -53,3 +53,6 @@ alembic upgrade head
 - Postgres DB
 - SQLAlchemy (ORM)
 - alembic (for migrations)
+
+NOTE: 
+- While Deploying the function, make sure that it is formatted as per the OpenFaaS standards. (gofmt -s -w . in the src folder)
