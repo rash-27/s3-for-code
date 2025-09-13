@@ -10,8 +10,9 @@ import models
 import schemas
 from database import engine, get_db
 import git
+import subprocess
 
-from models import FunctionType, SourceType, EventType
+from models import FunctionType, SourceType, EventType, StatusType
 
 # models.Base.metadata.create_all(bind=engine)
 
@@ -30,6 +31,8 @@ TEMP_PATH = os.path.join(FILE_STORE_PATH, "temp")
 os.makedirs(FUNCTIONS_PATH, exist_ok=True)
 os.makedirs(IMAGES_PATH, exist_ok=True)
 os.makedirs(TEMP_PATH, exist_ok=True)
+
+# Create a new function entry
 @app.post("/upload_function/", response_model=schemas.Function, status_code=201)
 def create_function(
     db: Session = Depends(get_db),
@@ -206,6 +209,55 @@ def create_function(
     return db_function
 
 
+# Update function entry
+@app.post("/update/{function_id}") # We only update STORAGE type and FUNCTION category
+def update_function(
+    function_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Updates the source code (handler.go) for a given function.
+    - Rejects the update if the function is being deployed or is sourced from GitHub.
+    - Replaces the existing handler file with the newly uploaded one.
+    - Sets the function status to 'updated' to signify it needs redeployment.
+    """
+
+    # 1. Fetch the function and perform initial checks
+    db_function = db.query(models.Function).filter(models.Function.id == function_id).first()
+    if not db_function:
+        raise HTTPException(status_code=404, detail="Function not found")
+
+    # 2. Raise exception if the function is currently under deployment
+    if db_function.status == StatusType.DEPLOYED:
+        # 409 Conflict is an appropriate status code for a temporary state conflict
+        raise HTTPException(status_code=409, detail="Function is currently under deployment.")
+
+    # 3. Raise exception if the source is GitHub, as its code is managed via git
+    if db_function.source == SourceType.GITHUB:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot update source file directly for a function sourced from GitHub. Use the deploy endpoint to re-fetch."
+        )
+    
+    if db_function.type != FunctionType.FUNCTION:
+        raise HTTPException(
+            status_code=400,
+            detail="Can only update source files for functions of type 'FUNCTION'."
+        )
+    
+    # Ensure a file was actually uploaded
+    if not file or not file.filename:
+        raise HTTPException(status_code=400, detail="A file upload is required.")
+
+    _update_source_file(db_function, file)
+    # 6. Return a success response
+    #    Instead of just 'true', a JSON object provides more context.
+    #    An exception is raised on failure, so a successful return always means it was updated.
+    return {"updated": True, "function_id": function_id, "new_status": "updated"}
+
+
+# Get all functions
 @app.get("/functions/", response_model=List[schemas.Function])
 def read_functions(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     """
@@ -214,43 +266,274 @@ def read_functions(skip: int = 0, limit: int = 100, db: Session = Depends(get_db
     functions = db.query(models.Function).offset(skip).limit(limit).all()
     return functions
 
+
 # start deployment
 @app.post("/deploy_function/{function_id}", response_model=schemas.Function)
 def deploy_function(function_id: str, db: Session = Depends(get_db)):
     """
-    Deploy a function by its ID.
+    Deploys a function by its ID.
+    - For GitHub-sourced functions, it re-fetches the latest code.
+    - For all buildable functions, it formats the code before deploying.
+    - Updates the function's status to 'deployed' upon success.
     """
-    function = db.query(models.Function).filter(models.Function.id == function_id).first()
-    if not function:
+
+    # 1. Fetch the function from the database
+    db_function = db.query(models.Function).filter(models.Function.id == function_id).first()
+    if not db_function:
         raise HTTPException(status_code=404, detail="Function not found")
 
-    if function.status == models.StatusType.DEPLOYED:
-        raise HTTPException(status_code=400, detail="Function is already deployed")
+    # 2. Check if the function is already deployed
+    if db_function.status == StatusType.DEPLOYED:
+        raise HTTPException(status_code=400, detail="Function is already deployed.")
 
-    # Here you would add the logic to deploy the function using OpenFaaS CLI or API
-    # For example, using subprocess to call `faas-cli deploy -f <stack.yml>`
-    import subprocess
+    # For Images the config file will not be changed
 
+    # 3. Handle the special case for GITHUB source: re-fetch the code
+    if db_function.source == SourceType.GITHUB:
+        print(f"Re-fetching source for GitHub function: {db_function.id}")
+        _refetch_from_github(db_function)
+    
+    if db_function.type == FunctionType.FUNCTION:
+        # 4. Format the code if it's a buildable function
+        _format_go_code(db_function)
+
+    # 5. Execute the deployment using 'faas-cli up'
+    #    This works for both FUNCTION and IMAGE types, as it just uses the stack.yml
+    _deploy_with_faas_cli(db_function)
+    
+    # 6. Update the function status in the database if deployment was successful
+    db_function.status = StatusType.DEPLOYED
+    db.commit()
+    db.refresh(db_function)
+
+    return db_function
+
+
+# Update deployment
+@app.post("/update_deployment/{function_id}", response_model=schemas.Function)
+def update_deployment(
+    function_id: str,
+    db: Session = Depends(get_db),
+    file: Optional[UploadFile] = File(None)
+):
+    """
+    Updates and redeploys a function. The behavior depends on the function's source and type.
+
+    1.  **GITHUB Source**: Re-fetches the latest code from the repo, formats it, and redeploys.
+    2.  **STORAGE Source (FUNCTION Type)**: If a file is provided, it replaces the handler.
+        Then, it formats the code and redeploys.
+    3.  **STORAGE Source (IMAGE Type)**: Re-triggers the deployment to pull the latest image from the registry.
+    """
+
+    # 1. Fetch the function and validate its state
+    db_function = db.query(models.Function).filter(models.Function.id == function_id).first()
+    if not db_function:
+        raise HTTPException(status_code=404, detail="Function not found")
+
+    if db_function.status == StatusType.PENDING:
+        raise HTTPException(status_code=409, detail="Function is not deployed.")
+
+    db_function.status = StatusType.PENDING
+    db.commit()
     try:
-        stack_file_path = os.path.join(function.location_url, "stack.yml")
-        if not os.path.exists(stack_file_path):
-            raise HTTPException(status_code=500, detail="stack.yml not found in the function directory")
+        # Scenario 1: Source is GITHUB
+        if db_function.source == SourceType.GITHUB:
+            _refetch_from_github(db_function)
 
-        # Call faas-cli to deploy the function
-        result = subprocess.run(["faas-cli", "deploy", "-f", stack_file_path], capture_output=True, text=True)
-        if result.returncode != 0:
-            raise HTTPException(status_code=500, detail=f"Deployment failed: {result.stderr}")
+        # Scenario 2: Source is STORAGE and Type is FUNCTION
+        elif db_function.source == SourceType.STORAGE and db_function.type == FunctionType.FUNCTION:
+            if file and file.filename:
+                _update_source_file(db_function, file)
 
-        # Update function status in the database
-        function.status = models.StatusType.DEPLOYED
+        # Scenario 3: Source is STORAGE and Type is IMAGE
+        # No file operations are needed here; we proceed directly to deployment.
+
+        # Format code if it's a buildable function
+        if db_function.type == FunctionType.FUNCTION:
+            _format_go_code(db_function)
+
+        # Trigger the deployment for all scenarios
+        _deploy_with_faas_cli(db_function)
+
+        # If all steps succeed, update the status to 'deployed'
+        db_function.status = StatusType.DEPLOYED
         db.commit()
-        db.refresh(function)
+        db.refresh(db_function)
+        return db_function
 
-        return function
-
+    except HTTPException as e:
+        # If a known error occurs, update status and re-raise
+        db_function.status = StatusType.PENDING
+        db.commit()
+        raise e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An error occurred during deployment: {e}")
-# stop deployment
+        # For unexpected errors
+        db_function.status = StatusType.UPDATE_FAILED
+        db.commit()
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+
+def _refetch_from_github(db_function: models.Function):
+    """Cleans old source and re-clones the repo."""
+    print(f"Re-fetching source for GitHub function: {db_function.id}")
+    function_dir = os.path.join(FUNCTIONS_PATH, db_function.id)
+    
+    if os.path.exists(function_dir):
+        shutil.rmtree(function_dir)
+    
+    temp_clone_dir = os.path.join(TEMP_PATH, db_function.id)
+    
+    try:
+        git.Repo.clone_from(db_function.location_url, temp_clone_dir)
+        
+        handler_path = next((os.path.join(root, "handler.go") for root, _, files in os.walk(temp_clone_dir) if "handler.go" in files), None)
+        if not handler_path:
+            raise HTTPException(status_code=404, detail="'handler.go' not found in the repository.")
+        
+        src_dir = os.path.join(function_dir, SRC_STORE_PATH_NAME)
+        config_dir = os.path.join(function_dir, CONFIG_STORE_PATH_NAME)
+        os.makedirs(src_dir, exist_ok=True)
+        os.makedirs(config_dir, exist_ok=True)
+
+        shutil.copy(handler_path, os.path.join(src_dir, "handler.go"))
+        
+        yaml_template = f"""version: 1.0
+provider:
+  name: openfaas
+  gateway: http://127.0.0.1:31112
+functions:
+  {db_function.id}:
+    lang: golang-http
+    handler: ../{SRC_STORE_PATH_NAME}
+    image: rash27/{db_function.id}:latest
+"""
+        with open(os.path.join(config_dir, "stack.yml"), "w") as f:
+            f.write(yaml_template)
+    finally:
+        if os.path.exists(temp_clone_dir):
+            shutil.rmtree(temp_clone_dir)
+
+def _update_source_file(db_function: models.Function, file: UploadFile):
+    """Replaces the handler.go file with the uploaded one."""
+    print(f"Updating source file for function: {db_function.id}")
+    src_dir = os.path.join(db_function.location_url, SRC_STORE_PATH_NAME)
+    if db_function.source == SourceType.GITHUB:
+        src_dir = os.path.join(FUNCTIONS_PATH, db_function.id, SRC_STORE_PATH_NAME)
+    
+    if db_function.type != FunctionType.FUNCTION and db_function.source != SourceType.GITHUB:
+        return  # No file update needed for non-buildable functions
+
+    if not os.path.isdir(src_dir):
+        raise HTTPException(status_code=404, detail=f"Source directory not found at: {src_dir}")
+    
+    # Remove old .go file(s)
+    for filename in os.listdir(src_dir):
+        if filename.endswith(".go"):
+            os.remove(os.path.join(src_dir, filename))
+    
+    try:
+        with open(os.path.join(src_dir, "handler.go"), "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    finally:
+        file.file.close()
+
+def _format_go_code(db_function: models.Function):
+    """Runs gofmt on the function's source directory."""
+    src_path = os.path.join(db_function.location_url, SRC_STORE_PATH_NAME)
+    if db_function.source == SourceType.GITHUB:
+        src_path = os.path.join(FUNCTIONS_PATH, db_function.id, SRC_STORE_PATH_NAME)
+    if db_function.type != FunctionType.FUNCTION and db_function.source != SourceType.GITHUB:
+        return  # No formatting needed for non-buildable functions
+    print(f"Formatting Go code in: {src_path}")
+    try:
+        subprocess.run(
+            ["gofmt", "-s", "-w", "."],
+            cwd=src_path, check=True, capture_output=True, text=True
+        )
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to format Go code: {e.stderr}")
+
+def _deploy_with_faas_cli(db_function: models.Function):
+    """Runs 'faas-cli up' using the function's stack.yml."""
+    config_path = db_function.location_url
+    if db_function.source == SourceType.GITHUB:
+        config_path = os.path.join(FUNCTIONS_PATH, db_function.id, CONFIG_STORE_PATH_NAME)
+    else: 
+        if db_function.type == FunctionType.FUNCTION:
+            config_path = os.path.join(db_function.location_url, CONFIG_STORE_PATH_NAME)        
+    
+    print(f"Deploying function from: {config_path}")
+    try:
+        subprocess.run(
+            ["faas-cli", "up", "-f", "stack.yml"],
+            cwd=config_path, check=True, capture_output=True, text=True
+        )
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Deployment failed: {e.stderr}")
+
+
+# Undeploy
+@app.post("/undeploy_function/{function_id}")
+def undeploy_function(function_id: str, db: Session = Depends(get_db)):
+    """
+    Undeploys a function by its ID.
+    - Rejects the request if the function is not in a 'deployed' state.
+    - Updates the function's status to 'undeployed' upon success.
+    """
+
+    # 1. Fetch the function from the database
+    db_function = db.query(models.Function).filter(models.Function.id == function_id).first()
+    if not db_function:
+        raise HTTPException(status_code=404, detail="Function not found")
+
+    # 2. Check if the function is in a state that can be undeployed
+    if db_function.status != StatusType.DEPLOYED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Function is not deployed. Current status: '{db_function.status}'"
+        )
+
+    # 3. Determine the path to the configuration file
+    file_path  = db_function.location_url
+    # For buildable functions, the stack.yml is in the 'config' subdirectory
+    if db_function.source == SourceType.GITHUB:
+        folder_path = os.path.join(FUNCTIONS_PATH, db_function.id)
+        config_path = os.path.join(folder_path, CONFIG_STORE_PATH_NAME)
+    else:
+        if db_function.type == FunctionType.FUNCTION:
+            file_path = os.path.join(db_function.location_url, CONFIG_STORE_PATH_NAME)
+    
+
+    stack_file = os.path.join(file_path, "stack.yml")
+    if not os.path.exists(stack_file):
+        raise HTTPException(status_code=404, detail=f"stack.yml not found in {config_path}")
+
+    # 4. Execute the undeployment using 'faas-cli remove'
+    print(f"Undeploying function from: {config_path}")
+    try:
+        # Run 'faas-cli remove -f stack.yml' from the directory containing the file
+        undeploy_process = subprocess.run(
+            ["faas-cli", "remove", "-f", "stack.yml"],
+            cwd=config_path,
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        print("Undeployment successful:", undeploy_process.stdout)
+
+    except subprocess.CalledProcessError as e:
+        # Raise an exception with the actual error from the faas-cli
+        raise HTTPException(status_code=500, detail=f"Undeployment failed: {e.stderr}")
+
+    # 5. Update the function status in the database
+    db_function.status = StatusType.PENDING
+    db.commit()
+    db.refresh(db_function)
+
+    # 6. Return a success response
+    return {"undeployed": True, "function_id": function_id, "new_status": "pending"}
+
 # logs
 
 # You can now use your cluster with:
