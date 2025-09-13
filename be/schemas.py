@@ -13,10 +13,11 @@ class FunctionBase(BaseModel):
     name: str
 
 class FunctionCreate(FunctionBase):
-    pass
+    github_url: Optional[str] = None
 
 class Function(FunctionBase):
     id: UUID
+    location_url: str
     status: StatusType
 
     model_config = ConfigDict(from_attributes=True)

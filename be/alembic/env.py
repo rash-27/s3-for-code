@@ -17,8 +17,13 @@ if config.config_file_name is not None:
 
 dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
 load_dotenv(dotenv_path)
-DB_URL = os.getenv("DATABASE_URL")
-config.set_main_option('sqlalchemy.url', DB_URL)
+db_user = os.getenv("POSTGRES_USER", "postgres")
+db_password = os.getenv("POSTGRES_PASSWORD", "password")
+db_server = os.getenv("POSTGRES_SERVER", "localhost") # Fallback to localhost if not set
+db_port = os.getenv("POSTGRES_PORT", "5432")
+db_name = os.getenv("POSTGRES_DB", "postgres")
+DATABASE_URL = f"postgresql://{db_user}:{db_password}@{db_server}:{db_port}/{db_name}"
+config.set_main_option('sqlalchemy.url', DATABASE_URL)
 
 target_metadata = Base.metadata
 # add your model's MetaData object here

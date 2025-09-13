@@ -6,7 +6,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+db_user = os.getenv("POSTGRES_USER", "postgres")
+db_password = os.getenv("POSTGRES_PASSWORD", "password")
+db_server = os.getenv("POSTGRES_SERVER", "localhost") # Fallback to localhost if not set
+db_port = os.getenv("POSTGRES_PORT", "5432")
+db_name = os.getenv("POSTGRES_DB", "postgres")
+DATABASE_URL = f"postgresql://{db_user}:{db_password}@{db_server}:{db_port}/{db_name}"
 
 SQLALCHEMY_DATABASE_URL = DATABASE_URL
 

@@ -35,20 +35,18 @@ Create and update .env file
 cp .env.example .env
 ```
 
-### Setting up the Database 
-Run a postgres image and create a database in it with name in the .env file
+Build and run the containers
 ```bash
-docker run -p 5432:5432 -e POSTGRES_PASSWORD=password -d postgres
+docker-compose up --build
 ```
 
-### Setting up the Backend
-Build backend image
+Once the containers are running, then make the migrations from the BE container in the DB
 ```bash
-docker build -t fastapi-backend .
+docker exec -it <backend_container_id> bash
 ```
-Run backend container
+Then run the following commands inside the container
 ```bash
-docker run -d -p 8000:8000 --name backend_container fastapi-backend
+alembic upgrade head
 ```
 
 ## Used internals

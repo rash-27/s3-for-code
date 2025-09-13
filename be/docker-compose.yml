@@ -1,6 +1,7 @@
 services:
-  db:
+  postgres:
     image: postgres:15
+    container_name: postgres
     restart: always
     environment:
       POSTGRES_USER: postgres
@@ -10,32 +11,20 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      # Test to check if the database is ready for connections.
-      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
 
   backend:
     build: .
-    # The command is now handled by the Dockerfile's ENTRYPOINT and CMD.
-    # We don't need to specify it here.
-    volumes:
-      - .:/app
+    container_name: backend
     ports:
       - "8000:8000"
     environment:
-      # Pass the database credentials from the .env file to the container.
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
       POSTGRES_DB: postgres
-      POSTGRES_SERVER: db # The service name 'db' is the hostname inside the Docker network.
+      POSTGRES_SERVER: postgres
       POSTGRES_PORT: 5432
     depends_on:
-      db:
-        condition: service_healthy # This condition waits for the healthcheck to pass.
+      - postgres
 
 volumes:
   postgres_data:
