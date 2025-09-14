@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { useNavigate } from 'react-router-dom';
 import FormInput from './FormInput';
 import Button from '../buttons/Button';
-import { FUNCTION_TYPES, SOURCE_TYPES, EVENT_TYPES, STATUS_TYPES } from '../../services/api';
+import { FUNCTION_TYPES, SOURCE_TYPES, EVENT_TYPES, STATUS_TYPES, functionAPI } from '../../services/api';
 
 const FunctionEditForm = ({ functionData }) => {
   const navigate = useNavigate();
@@ -16,7 +16,8 @@ const FunctionEditForm = ({ functionData }) => {
     handleSubmit,
     formState: { errors, isDirty },
     watch,
-    reset
+    reset,
+    setValue
   } = useForm({
     defaultValues: {
       name: functionData?.name || '',
@@ -30,26 +31,59 @@ const FunctionEditForm = ({ functionData }) => {
     }
   });
 
+  const functionType = watch('type');
   const source = watch('source');
   const eventType = watch('event_type');
-  const type = watch('type');
-  const locationUrl = watch('location_url');
+
+  // Auto-set source to DOCKER if functionType is IMAGE, and disable editing it
+  useEffect(() => {
+    if (functionType === 'IMAGE') {
+      setValue('source', 'DOCKER', { shouldValidate: true, shouldDirty: true });
+    }
+  }, [functionType, setValue]);
+
+  // Upload file helper
+  const handleFileUpload = async (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await functionAPI.uploadFile(formData);
+    return response.data?.file_url; // Adjust depending on backend response
+  };
 
   const onSubmit = async (data) => {
     setLoading(true);
     setSubmitError('');
 
     try {
-      // Simulate API call delay
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Validate file is selected if STORAGE source
+      if (functionType !== 'IMAGE' && source === 'STORAGE') {
+        if (!selectedFile) {
+          setSubmitError('File upload is required when source is STORAGE.');
+          setLoading(false);
+          return;
+        }
+        // Upload file and replace location_url with uploaded URL
+        const uploadedUrl = await handleFileUpload(selectedFile);
+        data.location_url = uploadedUrl;
+      }
+
+      // Use Docker or GitHub URL if applicable
+      if (functionType === 'IMAGE') {
+        data.location_url = data.docker_image_url || '';
+      } else if (source === 'GITHUB') {
+        data.location_url = data.github_url || '';
+      }
+
+      // Submit updated data
+      await functionAPI.create(data); // Change to your update API if needed
 
       alert(`Function "${data.name}" updated successfully!`);
       navigate('/');
     } catch (error) {
       console.error('Failed to update function:', error);
       setSubmitError(
-        error.response?.data?.detail ||
-        'Failed to update function. Please try again.'
+        error.response?.data?.detail || 'Failed to update function. Please try again.'
       );
     } finally {
       setLoading(false);
@@ -116,84 +150,77 @@ const FunctionEditForm = ({ functionData }) => {
               options={SOURCE_TYPES}
               helpText="Where your function code is stored"
               validation={{ required: 'Source Type is required' }}
+              disabled={functionType === 'IMAGE'}
             />
           </div>
 
-          {/* Show GitHub repo URL input only if source is GITHUB */}
-          {source === 'GITHUB' && (
-            <FormInput
-              label="GitHub Repository URL (.git)"
-              name="location_url"
-              type="url"
-              register={register}
-              errors={errors}
-              required
-              helpText="Enter your GitHub repository URL ending with .git"
-              validation={{
-                required: "Location URL is required",
-                validate: value => {
+          {/* Show all inputs but conditionally validate */}
+
+          {/* Docker Image URL */}
+          <FormInput
+            label="Docker Image URL"
+            name="docker_image_url"
+            register={register}
+            errors={errors}
+            helpText="Enter your Docker image URL (e.g., 'user/repo:tag')"
+            validation={{
+              validate: value => {
+                if (functionType === 'IMAGE' && source === 'DOCKER') {
+                  if (!value) return "Docker image URL is required";
+                  const pattern = /^[\w\-\.]+(\/[\w\-\.]+)*(:[\w\-\.]+)?$/;
+                  if (!pattern.test(value)) return "Invalid Docker image format";
+                }
+                return true;
+              }
+            }}
+          />
+
+          {/* GitHub Repository URL */}
+          <FormInput
+            label="GitHub Repository URL (.git)"
+            name="github_url"
+            type="url"
+            register={register}
+            errors={errors}
+            helpText="Enter your GitHub repository URL ending with .git"
+            validation={{
+              validate: value => {
+                if (functionType !== 'IMAGE' && source === 'GITHUB') {
+                  if (!value) return "GitHub repository URL is required";
                   try {
                     const url = new URL(value);
-                    if (!value.endsWith('.git')) {
-                      return "GitHub repo URL must end with .git";
-                    }
-                    if (!url.hostname.includes('github.com')) {
-                      return "GitHub repo URL must be a GitHub domain";
-                    }
+                    if (!value.endsWith('.git')) return "GitHub URL must end with .git";
+                    if (!url.hostname.includes('github.com')) return "Must be a GitHub URL";
                   } catch {
-                    return "Enter a valid GitHub URL";
+                    return "Invalid GitHub URL";
                   }
-                  return true;
                 }
-              }}
-            />
-          )}
+                return true;
+              }
+            }}
+          />
 
-          {/* Show Docker image URL input only if function type is IMAGE */}
-          {type === 'IMAGE' && (
-            <FormInput
-              label="Docker Image URL"
-              name="docker_image_url"
-              type="text"
-              register={register}
-              errors={errors}
-              required
-              helpText="Enter your Docker image URL"
-              validation={{
-                required: "Docker Image URL is required",
-                validate: value => {
-                  const dockerImagePattern = /^[\w\-\.]+(\/[\w\-\.]+)*(:[\w\-\.]+)?$/;
-                  if (!dockerImagePattern.test(value)) {
-                    return "Invalid Docker image URL format";
-                  }
-                  return true;
-                }
+          {/* File Upload */}
+          <div className="form-row">
+            <label htmlFor="file-upload" style={{ fontWeight: 'bold' }}>
+              Upload File
+            </label>
+            <input
+              type="file"
+              id="file-upload"
+              onChange={(e) => {
+                const file = e.target.files[0];
+                setSelectedFile(file);
+                if (file) alert(`File selected: ${file.name}`);
               }}
+              accept="*/*"
             />
-          )}
-
-          {/* Show file upload only if source is STORAGE */}
-          {source === 'STORAGE' && (
-            <div className="form-row">
-              <label htmlFor="file-upload" style={{ fontWeight: 'bold' }}>
-                Upload Function Package
-              </label>
-              <input
-                type="file"
-                id="file-upload"
-                onChange={(e) => {
-                  const file = e.target.files[0];
-                  setSelectedFile(file);
-                  if (file) {
-                    alert(`File selected: ${file.name}`);
-                    // TODO: Add file upload handling logic here
-                  }
-                }}
-                accept="*/*"
-              />
-              <small>Upload your function package here</small>
-            </div>
-          )}
+            <small>Upload your function package (.zip, .tar, etc.)</small>
+            {/* Show error if STORAGE source and no file */}
+            {functionType !== 'IMAGE' && source === 'STORAGE' && !selectedFile && (
+              <span className="error-message">File upload is required for STORAGE source</span>
+            )}
+          </div>
 
           <div className="form-row">
             <FormInput

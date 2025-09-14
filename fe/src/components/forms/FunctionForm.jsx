@@ -9,6 +9,8 @@ const FunctionForm = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [submitError, setSubmitError] = useState('');
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [fileError, setFileError] = useState('');
 
   const {
     register,
@@ -28,6 +30,8 @@ const FunctionForm = () => {
     }
   });
 
+  const functionType = watch('type');
+  const source = watch('source');
   const eventType = watch('event_type');
 
   const onSubmit = async (data) => {
@@ -35,6 +39,28 @@ const FunctionForm = () => {
     setSubmitError('');
 
     try {
+      // If source is STORAGE and functionType is not IMAGE, require file upload
+      if (functionType !== 'IMAGE' && source === 'STORAGE') {
+        if (!selectedFile) {
+          setSubmitError('File upload is required when source is STORAGE.');
+          setLoading(false);
+          return;
+        }
+
+        // Upload the file
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+
+        const response = await functionAPI.uploadFile(formData);
+        const uploadedUrl = response.data?.file_url; // Adjust based on your backend response
+
+        if (!uploadedUrl) {
+          throw new Error('File upload failed');
+        }
+
+        data.location_url = uploadedUrl; // Use uploaded file URL as location_url
+      }
+
       // Clean up optional fields
       const cleanData = {
         ...data,
@@ -49,6 +75,7 @@ const FunctionForm = () => {
       console.error('Failed to create function:', error);
       setSubmitError(
         error.response?.data?.detail || 
+        error.message ||
         'Failed to create function. Please check your input and try again.'
       );
     } finally {
@@ -60,7 +87,7 @@ const FunctionForm = () => {
     <div className="function-form-container">
       <form onSubmit={handleSubmit(onSubmit)} className="function-form" noValidate>
         {submitError && (
-          <div className="error-message" role="alert">
+          <div className="error-message" role="alert" style={{ color: 'red' }}>
             <strong>Error:</strong> {submitError}
           </div>
         )}
@@ -76,6 +103,7 @@ const FunctionForm = () => {
             required
             placeholder="my-awesome-function"
             helpText="Choose a descriptive name for your function"
+            validation={{ required: 'Function Name is required' }}
           />
 
           <div className="form-row">
@@ -88,6 +116,7 @@ const FunctionForm = () => {
               required
               options={FUNCTION_TYPES}
               helpText="Type of function to deploy"
+              validation={{ required: 'Function Type is required' }}
             />
 
             <FormInput
@@ -99,19 +128,71 @@ const FunctionForm = () => {
               required
               options={SOURCE_TYPES}
               helpText="Where your function code is stored"
+              validation={{ required: 'Source Type is required' }}
             />
           </div>
 
-          <FormInput
-            label="Location URL"
-            name="location_url"
-            type="url"
-            register={register}
-            errors={errors}
-            required
-            placeholder="https://github.com/username/repo"
-            helpText="GitHub repository URL or storage location"
-          />
+          {/* Show Location URL input only if source is not STORAGE (file upload) */}
+          {(source !== 'STORAGE') && (
+            <FormInput
+              label="Location URL"
+              name="location_url"
+              type="url"
+              register={register}
+              errors={errors}
+              required
+              placeholder="https://github.com/username/repo or Docker image URL"
+              helpText="GitHub repository URL, Docker image URL, or storage location"
+              validation={{
+                required: 'Location URL is required',
+                pattern: {
+                  value: /^https?:\/\/.+/,
+                  message: 'Enter a valid URL'
+                }
+              }}
+            />
+          )}
+
+          {/* File Upload for STORAGE source */}
+          {functionType !== 'IMAGE' && source === 'STORAGE' && (
+            <div className="form-row">
+              <label htmlFor="file-upload" style={{ fontWeight: 'bold' }}>
+                Upload File
+              </label>
+              <input
+                type="file"
+                id="file-upload"
+                onChange={e => {
+                  const file = e.target.files[0];
+                  if (!file) {
+                    setSelectedFile(null);
+                    setFileError('');
+                    return;
+                  }
+
+                  // Define valid MIME types (adjust as needed)
+                  const validFileTypes = [
+                    'application/javascript',
+                    'text/plain',
+                    'application/x-tar',
+                    'application/octet-stream',
+                    'application/zip',
+                    'application/gzip'
+                  ];
+
+                  if (!validFileTypes.includes(file.type)) {
+                    setFileError('Invalid file type for STORAGE source');
+                    setSelectedFile(null);
+                  } else {
+                    setFileError('');
+                    setSelectedFile(file);
+                  }
+                }}
+                accept=".js,.txt,.zip,.tar,.gz"
+              />
+              {fileError && <p style={{ color: 'red' }}>{fileError}</p>}
+            </div>
+          )}
 
           <FormInput
             label="Event Type"
@@ -122,6 +203,7 @@ const FunctionForm = () => {
             required
             options={EVENT_TYPES}
             helpText="How this function will be triggered"
+            validation={{ required: 'Event Type is required' }}
           />
         </fieldset>
 
@@ -172,7 +254,12 @@ const FunctionForm = () => {
           <Button
             type="button"
             variant="outline"
-            onClick={() => reset()}
+            onClick={() => {
+              reset();
+              setSelectedFile(null);
+              setFileError('');
+              setSubmitError('');
+            }}
           >
             Clear Form
           </Button>
