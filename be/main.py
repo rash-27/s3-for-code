@@ -49,7 +49,6 @@ def create_function(
     """
     Create a new function entry.
     """
-
     final_location_url = ""
     generated_uuid = str(uuid.uuid4())
     if source == SourceType.STORAGE:
@@ -75,14 +74,14 @@ def create_function(
                     shutil.copyfileobj(file.file, buffer)
 
                 yaml_template = f"""version: 1.0
-        provider:
+    provider:
         name: openfaas
         gateway: http://127.0.0.1:31112
-        functions:
+    functions:
         {function_uuid}:
             lang: golang-http
             handler: ../{SRC_STORE_PATH_NAME}
-            image: rash27/{function_uuid}:latest
+            image: rash27/func-{function_uuid}:latest
         """
                 yaml_file_path = os.path.join(config_dir, "stack.yml")
                 with open(yaml_file_path, "w") as yaml_file:
@@ -99,10 +98,10 @@ def create_function(
                 os.makedirs(deployment_dir, exist_ok=True)
 
                 yaml_template = f"""version: 1.0
-        provider:
+    provider:
         name: openfaas
         gateway: http://127.0.0.1:31112
-        functions:
+    functions:
         {deployment_uuid}:
             image: {image_name}
             skip_build: true
@@ -156,14 +155,14 @@ def create_function(
             shutil.copy(handler_path, os.path.join(final_function_src_dir, "handler.go"))
 
             yaml_template = f"""version: 1.0
-    provider:
+provider:
     name: openfaas
     gateway: http://127.0.0.1:31112
-    functions:
+functions:
     {function_uuid}:
         lang: golang-http
         handler: ../{SRC_STORE_PATH_NAME}
-        image: rash27/{function_uuid}:latest
+        image: rash27/func-{function_uuid}:latest
     """
             yaml_file_path = os.path.join(final_function_config_dir, "stack.yml")
             with open(yaml_file_path, "w") as yaml_file:
@@ -377,12 +376,12 @@ def update_deployment(
 def _refetch_from_github(db_function: models.Function):
     """Cleans old source and re-clones the repo."""
     print(f"Re-fetching source for GitHub function: {db_function.id}")
-    function_dir = os.path.join(FUNCTIONS_PATH, db_function.id)
+    function_dir = os.path.join(FUNCTIONS_PATH, str(db_function.id))
     
     if os.path.exists(function_dir):
         shutil.rmtree(function_dir)
     
-    temp_clone_dir = os.path.join(TEMP_PATH, db_function.id)
+    temp_clone_dir = os.path.join(TEMP_PATH, str(db_function.id))
     
     try:
         git.Repo.clone_from(db_function.location_url, temp_clone_dir)
@@ -403,10 +402,10 @@ provider:
   name: openfaas
   gateway: http://127.0.0.1:31112
 functions:
-  {db_function.id}:
+  {str(db_function.id)}:
     lang: golang-http
     handler: ../{SRC_STORE_PATH_NAME}
-    image: rash27/{db_function.id}:latest
+    image: rash27/func-{str(db_function.id)}:latest
 """
         with open(os.path.join(config_dir, "stack.yml"), "w") as f:
             f.write(yaml_template)
@@ -419,7 +418,7 @@ def _update_source_file(db_function: models.Function, file: UploadFile):
     print(f"Updating source file for function: {db_function.id}")
     src_dir = os.path.join(db_function.location_url, SRC_STORE_PATH_NAME)
     if db_function.source == SourceType.GITHUB:
-        src_dir = os.path.join(FUNCTIONS_PATH, db_function.id, SRC_STORE_PATH_NAME)
+        src_dir = os.path.join(FUNCTIONS_PATH, str(db_function.id), SRC_STORE_PATH_NAME)
     
     if db_function.type != FunctionType.FUNCTION and db_function.source != SourceType.GITHUB:
         return  # No file update needed for non-buildable functions
@@ -442,7 +441,7 @@ def _format_go_code(db_function: models.Function):
     """Runs gofmt on the function's source directory."""
     src_path = os.path.join(db_function.location_url, SRC_STORE_PATH_NAME)
     if db_function.source == SourceType.GITHUB:
-        src_path = os.path.join(FUNCTIONS_PATH, db_function.id, SRC_STORE_PATH_NAME)
+        src_path = os.path.join(FUNCTIONS_PATH, str(db_function.id), SRC_STORE_PATH_NAME)
     if db_function.type != FunctionType.FUNCTION and db_function.source != SourceType.GITHUB:
         return  # No formatting needed for non-buildable functions
     print(f"Formatting Go code in: {src_path}")
@@ -458,18 +457,20 @@ def _deploy_with_faas_cli(db_function: models.Function):
     """Runs 'faas-cli up' using the function's stack.yml."""
     config_path = db_function.location_url
     if db_function.source == SourceType.GITHUB:
-        config_path = os.path.join(FUNCTIONS_PATH, db_function.id, CONFIG_STORE_PATH_NAME)
+        config_path = os.path.join(FUNCTIONS_PATH, str(db_function.id), CONFIG_STORE_PATH_NAME)
     else: 
         if db_function.type == FunctionType.FUNCTION:
             config_path = os.path.join(db_function.location_url, CONFIG_STORE_PATH_NAME)        
     
     print(f"Deploying function from: {config_path}")
     try:
+        subprocess.run(["faas-cli", "template", "store", "pull", "golang-http"], cwd=config_path, check=True, capture_output=True, text=True)
         subprocess.run(
             ["faas-cli", "up", "-f", "stack.yml"],
-            cwd=config_path, check=True, capture_output=True, text=True
+            cwd=config_path, check=True, text=True
         )
     except subprocess.CalledProcessError as e:
+        print(f"Deployment failed: {e}")
         raise HTTPException(status_code=500, detail=f"Deployment failed: {e.stderr}")
 
 
@@ -498,7 +499,7 @@ def undeploy_function(function_id: str, db: Session = Depends(get_db)):
     file_path  = db_function.location_url
     # For buildable functions, the stack.yml is in the 'config' subdirectory
     if db_function.source == SourceType.GITHUB:
-        folder_path = os.path.join(FUNCTIONS_PATH, db_function.id)
+        folder_path = os.path.join(FUNCTIONS_PATH, str(db_function.id))
         config_path = os.path.join(folder_path, CONFIG_STORE_PATH_NAME)
     else:
         if db_function.type == FunctionType.FUNCTION:

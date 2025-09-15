@@ -6,13 +6,14 @@ from models import FunctionType, SourceType, StatusType, EventType
 class FunctionBase(BaseModel):
     type: FunctionType
     source: SourceType
-    location_url: str
+    location_url: Optional[str] = None
     event_type: EventType
     redis_host: Optional[str] = None
     redis_queue_name: Optional[str] = None
     name: str
 
 class FunctionCreate(FunctionBase):
+    id: Optional[UUID] = None
     github_url: Optional[str] = None
 
 class Function(FunctionBase):
