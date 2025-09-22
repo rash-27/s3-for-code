@@ -161,7 +161,7 @@ Once the openFaas setup is done you can use the API's to create functions and de
 
 ### Some other useful commands
 
-To get the Number of replicas of a function in OpenFaas cli 
+To get the Number of replicas of a delpoyed function 
 ```bash
 kubectl get deploy -n openfaas-fn <function_name>
 ```
