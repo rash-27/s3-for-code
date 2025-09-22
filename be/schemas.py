@@ -22,3 +22,9 @@ class Function(FunctionBase):
     status: StatusType
 
     model_config = ConfigDict(from_attributes=True)
+
+class LogsResponse():
+    id: str
+    status: str
+    replicas: int
+    availableReplicas: int

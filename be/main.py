@@ -11,15 +11,29 @@ import schemas
 from database import engine, get_db
 import git
 import subprocess
+from kubernetes import client, config
+from fastapi.middleware.cors import CORSMiddleware
 
 from models import FunctionType, SourceType, EventType, StatusType
 
 # models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
-    title="Function Service API",
-    description="API for managing serverless functions.",
+    title="S3 For Code",
+    description="API for Scaling Functions.",
     version="1.0.0"
+)
+origins = [
+    "http://localhost",
+    "http://localhost:5173",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 FILE_STORE_PATH = "file_store"
@@ -78,10 +92,14 @@ def create_function(
         name: openfaas
         gateway: http://127.0.0.1:31112
     functions:
-        {function_uuid}:
+        func-{function_uuid}:
             lang: golang-http
             handler: ../{SRC_STORE_PATH_NAME}
             image: rash27/func-{function_uuid}:latest
+            labels: 
+            com.openfaas.scale.min: "1"
+            com.openfaas.scale.max: "5"
+            com.openfaas.scale.factor: "100"
         """
                 yaml_file_path = os.path.join(config_dir, "stack.yml")
                 with open(yaml_file_path, "w") as yaml_file:
@@ -102,9 +120,13 @@ def create_function(
         name: openfaas
         gateway: http://127.0.0.1:31112
     functions:
-        {deployment_uuid}:
+        func-{deployment_uuid}:
             image: {image_name}
             skip_build: true
+            labels: 
+            com.openfaas.scale.min: "1"
+            com.openfaas.scale.max: "5"
+            com.openfaas.scale.factor: "100"
         """
                 yaml_file_path = os.path.join(deployment_dir, "stack.yml")
                 with open(yaml_file_path, "w") as yaml_file:
@@ -159,10 +181,14 @@ provider:
     name: openfaas
     gateway: http://127.0.0.1:31112
 functions:
-    {function_uuid}:
+    func-{function_uuid}:
         lang: golang-http
         handler: ../{SRC_STORE_PATH_NAME}
         image: rash27/func-{function_uuid}:latest
+        labels: 
+        com.openfaas.scale.min: "1"
+        com.openfaas.scale.max: "5"
+        com.openfaas.scale.factor: "100"
     """
             yaml_file_path = os.path.join(final_function_config_dir, "stack.yml")
             with open(yaml_file_path, "w") as yaml_file:
@@ -289,7 +315,6 @@ def deploy_function(function_id: str, db: Session = Depends(get_db)):
 
     # 3. Handle the special case for GITHUB source: re-fetch the code
     if db_function.source == SourceType.GITHUB:
-        print(f"Re-fetching source for GitHub function: {db_function.id}")
         _refetch_from_github(db_function)
     
     if db_function.type == FunctionType.FUNCTION:
@@ -402,10 +427,14 @@ provider:
   name: openfaas
   gateway: http://127.0.0.1:31112
 functions:
-  {str(db_function.id)}:
+  func-{str(db_function.id)}:
     lang: golang-http
     handler: ../{SRC_STORE_PATH_NAME}
     image: rash27/func-{str(db_function.id)}:latest
+    labels: 
+      com.openfaas.scale.min: "1"
+      com.openfaas.scale.max: "5"
+      com.openfaas.scale.factor: "100"
 """
         with open(os.path.join(config_dir, "stack.yml"), "w") as f:
             f.write(yaml_template)
@@ -496,17 +525,16 @@ def undeploy_function(function_id: str, db: Session = Depends(get_db)):
         )
 
     # 3. Determine the path to the configuration file
-    file_path  = db_function.location_url
+    config_path  = db_function.location_url
     # For buildable functions, the stack.yml is in the 'config' subdirectory
     if db_function.source == SourceType.GITHUB:
         folder_path = os.path.join(FUNCTIONS_PATH, str(db_function.id))
         config_path = os.path.join(folder_path, CONFIG_STORE_PATH_NAME)
     else:
         if db_function.type == FunctionType.FUNCTION:
-            file_path = os.path.join(db_function.location_url, CONFIG_STORE_PATH_NAME)
-    
+            config_path = os.path.join(db_function.location_url, CONFIG_STORE_PATH_NAME)
 
-    stack_file = os.path.join(file_path, "stack.yml")
+    stack_file = os.path.join(config_path, "stack.yml")
     if not os.path.exists(stack_file):
         raise HTTPException(status_code=404, detail=f"stack.yml not found in {config_path}")
 
@@ -536,6 +564,44 @@ def undeploy_function(function_id: str, db: Session = Depends(get_db)):
     return {"undeployed": True, "function_id": function_id, "new_status": "pending"}
 
 # logs
+@app.get("/logs/{function_id}")
+def get_function_status(function_id: str, response_model=schemas.LogsResponse):
+    # Load Kubernetes configuration (from in-cluster service account or local kubeconfig)
+    try:
+        config.load_incluster_config()
+    except config.ConfigException:
+        config.load_kube_config()
+
+    # Create an API client
+    api = client.AppsV1Api()
+
+    try:
+        # Fetch the deployment for the given function ID in the 'openfaas-fn' namespace
+        namespace = "openfaas-fn"
+        print("Function Id", function_id)
+        deployment = api.read_namespaced_deployment(name='func-'+function_id, namespace=namespace)
+
+        # Extract the replica counts from the deployment's status
+        desired_replicas = deployment.spec.replicas
+        available_replicas = deployment.status.available_replicas if deployment.status.available_replicas else 0
+
+        # Determine the status
+        status = "Ready" if available_replicas > 0 and available_replicas >= desired_replicas else "NotReady"
+
+        # Return the data in a JSON-friendly format for your API response
+        return {
+            "id": function_id,
+            "status": status,
+            "replicas": desired_replicas,
+            "availableReplicas": available_replicas,
+        }
+
+    except client.ApiException as e:
+        if e.status == 404:
+            return {"error": f"Function '{function_id}' not found."}
+        else:
+            return {"error": f"API error: {e.reason}"}
+
 
 # You can now use your cluster with:
 

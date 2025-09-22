@@ -3,8 +3,13 @@ provider:
   name: openfaas
   gateway: http://127.0.0.1:31112
 functions:
-  demo-go:
+  demo:
     lang: golang-http
-    handler: ./demo-go
-    image: rash27/demo-go:latest
+    handler: ./demo
+    image: rash27/demo:latest
+    labels: 
+      com.openfaas.scale.min: "1"
+      com.openfaas.scale.max: "5"
+      com.openfaas.scale.factor: "100"
+
 
