@@ -13,7 +13,7 @@ const DeploymentButtons = ({ functionData, onUpdate }) => {
       if (isStart) {
         await functionAPI.startDeploy(functionData.id);
       } else {
-        await functionAPI.stopDeploy(functionData.id);
+        await functionAPI.delete(functionData.id);
       }
       
       // Refresh function data
@@ -31,6 +31,8 @@ const DeploymentButtons = ({ functionData, onUpdate }) => {
   const isPending = functionData.status === 'PENDING';
 
   return (
+    <>
+      {!isPending && <p>Deployment Url: <a style={{textDecoration: 'underline'}} href={`http://localhost:31112/function/func-${functionData.id}`}>http://localhost:31112/function/func-{functionData.id}</a></p>}
     <div className="deployment-buttons">
       {isPending ? (
         <Button
@@ -52,6 +54,7 @@ const DeploymentButtons = ({ functionData, onUpdate }) => {
         </Button>
       )}
     </div>
+    </>
   );
 };
 

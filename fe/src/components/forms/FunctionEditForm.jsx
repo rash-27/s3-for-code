@@ -3,13 +3,12 @@ import { useForm } from 'react-hook-form';
 import { useNavigate } from 'react-router-dom';
 import FormInput from './FormInput';
 import Button from '../buttons/Button';
-import { FUNCTION_TYPES, SOURCE_TYPES, EVENT_TYPES, STATUS_TYPES, functionAPI } from '../../services/api';
+import { functionAPI, FUNCTION_TYPES, SOURCE_TYPES, EVENT_TYPES, STATUS_TYPES } from '../../services/api';
 
 const FunctionEditForm = ({ functionData }) => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [submitError, setSubmitError] = useState('');
-  const [selectedFile, setSelectedFile] = useState(null);
 
   const {
     register,
@@ -19,11 +18,11 @@ const FunctionEditForm = ({ functionData }) => {
     reset,
     setValue
   } = useForm({
+    // Use the functionData prop to set the form's default values
     defaultValues: {
       name: functionData?.name || '',
       type: functionData?.type || '',
       source: functionData?.source || '',
-      location_url: functionData?.location_url || '',
       event_type: functionData?.event_type || '',
       status: functionData?.status || '',
       redis_host: functionData?.redis_host || '',
@@ -32,54 +31,38 @@ const FunctionEditForm = ({ functionData }) => {
   });
 
   const functionType = watch('type');
-  const source = watch('source');
   const eventType = watch('event_type');
 
-  // Auto-set source to DOCKER if functionType is IMAGE, and disable editing it
+  // Automatically adjust source type if function type changes
   useEffect(() => {
     if (functionType === 'IMAGE') {
-      setValue('source', 'DOCKER', { shouldValidate: true, shouldDirty: true });
+      setValue('source', 'STORAGE', { shouldDirty: true }); // Or DOCKER if you add it to SOURCE_TYPES
     }
   }, [functionType, setValue]);
 
-  // Upload file helper
-  const handleFileUpload = async (file) => {
-    const formData = new FormData();
-    formData.append('file', file);
-
-    const response = await functionAPI.uploadFile(formData);
-    return response.data?.file_url; // Adjust depending on backend response
-  };
-
+  // ** CORRECTED onSubmit LOGIC **
   const onSubmit = async (data) => {
     setLoading(true);
     setSubmitError('');
 
+    // Prepare the payload with only the fields that can be edited.
+    // This form should only update metadata. File updates are handled by the
+    // "Update & Redeploy" button on the main list.
+    const updatePayload = {
+      name: data.name,
+      type: data.type,
+      source: data.source,
+      event_type: data.event_type,
+      status: data.status, // Note: letting users change status might be risky
+      redis_host: data.redis_host,
+      redis_queue_name: data.redis_queue_name,
+    };
+
     try {
-      // Validate file is selected if STORAGE source
-      if (functionType !== 'IMAGE' && source === 'STORAGE') {
-        if (!selectedFile) {
-          setSubmitError('File upload is required when source is STORAGE.');
-          setLoading(false);
-          return;
-        }
-        // Upload file and replace location_url with uploaded URL
-        const uploadedUrl = await handleFileUpload(selectedFile);
-        data.location_url = uploadedUrl;
-      }
-
-      // Use Docker or GitHub URL if applicable
-      if (functionType === 'IMAGE') {
-        data.location_url = data.docker_image_url || '';
-      } else if (source === 'GITHUB') {
-        data.location_url = data.github_url || '';
-      }
-
-      // Submit updated data
-      await functionAPI.create(data); // Change to your update API if needed
-
+      // Call the correct 'update' API endpoint with the function's ID
+      await functionAPI.update(functionData.id, updatePayload);
       alert(`Function "${data.name}" updated successfully!`);
-      navigate('/');
+      navigate('/'); // Go back to the list page
     } catch (error) {
       console.error('Failed to update function:', error);
       setSubmitError(
@@ -89,22 +72,7 @@ const FunctionEditForm = ({ functionData }) => {
       setLoading(false);
     }
   };
-
-  const resetForm = () => {
-    reset({
-      name: functionData?.name || '',
-      type: functionData?.type || '',
-      source: functionData?.source || '',
-      location_url: functionData?.location_url || '',
-      event_type: functionData?.event_type || '',
-      status: functionData?.status || '',
-      redis_host: functionData?.redis_host || '',
-      redis_queue_name: functionData?.redis_queue_name || ''
-    });
-    setSubmitError('');
-    setSelectedFile(null);
-  };
-
+  
   return (
     <div className="function-edit-form-container">
       <form onSubmit={handleSubmit(onSubmit)} className="function-form" noValidate>
@@ -115,7 +83,7 @@ const FunctionEditForm = ({ functionData }) => {
         )}
 
         <fieldset>
-          <legend>Edit Function Details</legend>
+          <legend>Edit Function: {functionData?.name}</legend>
 
           <FormInput
             label="Function Name"
@@ -123,8 +91,6 @@ const FunctionEditForm = ({ functionData }) => {
             register={register}
             errors={errors}
             required
-            helpText="Choose a descriptive name for your function"
-            validation={{ required: 'Function Name is required' }}
           />
 
           <div className="form-row">
@@ -136,10 +102,7 @@ const FunctionEditForm = ({ functionData }) => {
               errors={errors}
               required
               options={FUNCTION_TYPES}
-              helpText="Type of function to deploy"
-              validation={{ required: 'Function Type is required' }}
             />
-
             <FormInput
               label="Source Type"
               name="source"
@@ -148,80 +111,10 @@ const FunctionEditForm = ({ functionData }) => {
               errors={errors}
               required
               options={SOURCE_TYPES}
-              helpText="Where your function code is stored"
-              validation={{ required: 'Source Type is required' }}
               disabled={functionType === 'IMAGE'}
             />
           </div>
-
-          {/* Show all inputs but conditionally validate */}
-
-          {/* Docker Image URL */}
-          <FormInput
-            label="Docker Image URL"
-            name="docker_image_url"
-            register={register}
-            errors={errors}
-            helpText="Enter your Docker image URL (e.g., 'user/repo:tag')"
-            validation={{
-              validate: value => {
-                if (functionType === 'IMAGE' && source === 'DOCKER') {
-                  if (!value) return "Docker image URL is required";
-                  const pattern = /^[\w\-\.]+(\/[\w\-\.]+)*(:[\w\-\.]+)?$/;
-                  if (!pattern.test(value)) return "Invalid Docker image format";
-                }
-                return true;
-              }
-            }}
-          />
-
-          {/* GitHub Repository URL */}
-          <FormInput
-            label="GitHub Repository URL (.git)"
-            name="github_url"
-            type="url"
-            register={register}
-            errors={errors}
-            helpText="Enter your GitHub repository URL ending with .git"
-            validation={{
-              validate: value => {
-                if (functionType !== 'IMAGE' && source === 'GITHUB') {
-                  if (!value) return "GitHub repository URL is required";
-                  try {
-                    const url = new URL(value);
-                    if (!value.endsWith('.git')) return "GitHub URL must end with .git";
-                    if (!url.hostname.includes('github.com')) return "Must be a GitHub URL";
-                  } catch {
-                    return "Invalid GitHub URL";
-                  }
-                }
-                return true;
-              }
-            }}
-          />
-
-          {/* File Upload */}
-          <div className="form-row">
-            <label htmlFor="file-upload" style={{ fontWeight: 'bold' }}>
-              Upload File
-            </label>
-            <input
-              type="file"
-              id="file-upload"
-              onChange={(e) => {
-                const file = e.target.files[0];
-                setSelectedFile(file);
-                if (file) alert(`File selected: ${file.name}`);
-              }}
-              accept="*/*"
-            />
-            <small>Upload your function package (.zip, .tar, etc.)</small>
-            {/* Show error if STORAGE source and no file */}
-            {functionType !== 'IMAGE' && source === 'STORAGE' && !selectedFile && (
-              <span className="error-message">File upload is required for STORAGE source</span>
-            )}
-          </div>
-
+          
           <div className="form-row">
             <FormInput
               label="Event Type"
@@ -231,10 +124,7 @@ const FunctionEditForm = ({ functionData }) => {
               errors={errors}
               required
               options={EVENT_TYPES}
-              helpText="How this function will be triggered"
-              validation={{ required: 'Event Type is required' }}
             />
-
             <FormInput
               label="Status"
               name="status"
@@ -243,8 +133,6 @@ const FunctionEditForm = ({ functionData }) => {
               errors={errors}
               required
               options={STATUS_TYPES}
-              helpText="Current deployment status"
-              validation={{ required: 'Status is required' }}
             />
           </div>
         </fieldset>
@@ -252,22 +140,18 @@ const FunctionEditForm = ({ functionData }) => {
         {eventType === 'QUEUE_EVENT' && (
           <fieldset>
             <legend>Queue Configuration</legend>
-
             <div className="form-row">
               <FormInput
                 label="Redis Host"
                 name="redis_host"
                 register={register}
                 errors={errors}
-                helpText="Redis server connection URL"
               />
-
               <FormInput
                 label="Redis Queue Name"
                 name="redis_queue_name"
                 register={register}
                 errors={errors}
-                helpText="Queue name for processing events"
               />
             </div>
           </fieldset>
@@ -280,32 +164,15 @@ const FunctionEditForm = ({ functionData }) => {
             loading={loading}
             disabled={loading || !isDirty}
           >
-            Update Function
+            Save Changes
           </Button>
-
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => navigate('/')}
-          >
+          <Button type="button" variant="outline" onClick={() => navigate('/')}>
             Cancel
           </Button>
-
-          <Button
-            type="button"
-            variant="outline"
-            onClick={resetForm}
-            disabled={!isDirty}
-          >
-            Reset Changes
+          <Button type="button" variant="outline" onClick={() => reset()} disabled={!isDirty}>
+            Reset
           </Button>
         </div>
-
-        {isDirty && (
-          <div className="form-status">
-            <small>You have unsaved changes</small>
-          </div>
-        )}
       </form>
     </div>
   );
