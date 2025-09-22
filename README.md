@@ -1,8 +1,11 @@
 # s3-for-code
 
 ## Architechture Diagram
+<img width="1740" height="1451" alt="architechture-diagram" src="https://github.com/user-attachments/assets/627eab8a-ee27-4371-98cc-2ada220ad101" />
 
-## Setting up the BE (Manual)
+## Backend 
+
+### Setting up the BE (Manual)
 
 Change the Directory
 ```bash
@@ -29,7 +32,7 @@ fastapi dev main.py
 uvicorn main:app --reload
 ```
 
-## Setting up the BE (using Docker)
+### Setting up the BE (using Docker)
 
 Change the Directory
 ```bash
@@ -55,10 +58,40 @@ Then run the following commands inside the container
 alembic upgrade head
 ```
 
-## Used internals
+Once the Backend is set up you can see the swagger docs at 
+```bash
+http://localhost:8000/docs
+```
+
+### Used internals For Backend
+- FastAPI
 - Postgres DB
 - SQLAlchemy (ORM)
 - alembic (for migrations)
+
+## Frontend 
+
+### Setting up the FE
+
+Change the Directory
+```bash
+cd fe
+```
+
+Create and update .env file
+```
+cp .env.example .env
+```
+
+Install Dependencies (Make sure node version is above 21)
+```bash
+npm install
+```
+
+Run development Server
+```
+npm run dev
+```
 
 NOTE: 
 - While Deploying the function, make sure that it is formatted as per the OpenFaaS standards. (gofmt -s -w . in the src folder)
