@@ -93,37 +93,79 @@ Run development Server
 npm run dev
 ```
 
-NOTE: 
-- While Deploying the function, make sure that it is formatted as per the OpenFaaS standards. (gofmt -s -w . in the src folder)
+After the server is running you can see the FE at
+```
+http://localhost:5173
+```
+
+### Used internals For Frontend
+- ReactJS
+
+## Setting up environment for OpenFaaS
+
+### Prerequisites
+- Docker
+- kubectl
+- kind
+- arkade
+- faas-cli
+
+### Setting up kubernetes cluster 
+
+Change the Directory
+```bash
+cd be
+```
+
+Create a kubernetes cluster using kind
+```bash
+kind create cluster --config kind-config.yaml --name openfaas-cluster
+```
+
+Give the default service account access to pull images from docker hub
+```bash
+kubectl create secret docker-registry docker-hub-creds  --docker-username=<docker_user_name>  --docker-password=<docker_PAT_Token> --docker-email=<docker_email>
+```
+
+Patch the default service account to use the image pull secret
+```bash
+kubectl patch serviceaccount default -p '{"imagePullSecrets": [{"name": "docker-hub-creds"}]}'
+```
+
+### Setting up OpenFaaS using arkade
+
+Install openfaas in cluster using arkade
+```bash
+arkade install openfaas \
+  --set openfaas.imagePullSecret=docker-hub-creds
+```
+
+Forward the gateway port to localhost (Then you can access the OpenFaaS UI at http://127.0.0.1:31112/ui)
+```bash
+kubectl port-forward svc/gateway -n openfaas 31112:8080 &
+```
+
+Login to OpenFaaS using faas-cli
+```bash
+export OPENFAAS_URL=http://127.0.0.1:31112
+echo -n $(kubectl get secret -n openfaas basic-auth -o jsonpath="{.data.basic-auth-password}" | base64 --decode) | faas-cli login --username admin --password-stdin   
+```
+
+To get the password to login to OpenFaaS UI (username: admin)
+```bash
+PASSWORD=$(kubectl get secret -n openfaas basic-auth -o jsonpath="{.data.basic-auth-password}" | base64 --decode)
+echo "Your OpenFaaS password is: $PASSWORD"
+```
+
+Once the openFaas setup is done you can use the API's to create functions and deploy them.
+
+### Some other useful commands
 
 To get the Number of replicas of a function in OpenFaas cli 
 ```bash
 kubectl get deploy -n openfaas-fn <function_name>
 ```
-
-To get Pods of keda using kubectl
-```bash
-kubectl get pods -n keda
-```
-
-kind create cluster --config kind-config.yaml --name openfaas-cluster
-
-kubectl create secret docker-registry docker-hub-creds  --docker-username=<docker_user_name>  --docker-password=<docker_PAT_Token> --docker-email=<docker_email>
-
-kubectl patch serviceaccount default -p '{"imagePullSecrets": [{"name": "docker-hub-creds"}]}'
-
-arkade install openfaas \
-  --set openfaas.imagePullSecret=docker-hub-creds
-
-kubectl port-forward svc/gateway -n openfaas 31112:8080 &
-
-export OPENFAAS_URL=http://127.0.0.1:31112
-
-echo -n $(kubectl get secret -n openfaas basic-auth -o jsonpath="{.data.basic-auth-password}" | base64 --decode) | faas-cli login --username admin --password-stdin   
-
-PASSWORD=$(kubectl get secret -n openfaas basic-auth -o jsonpath="{.data.basic-auth-password}" | base64 --decode)
-echo "Your OpenFaaS password is: $PASSWORD"
-
-
 To watch the deployment of a function
-kubectl get deploy/demo -n openfaas-fn --watch
+```bash
+kubectl get deploy/<function-name> -n openfaas-fn --watch
+```
